@@ -1,65 +1,61 @@
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-from sqlalchemy import create_engine, text
-from utils.xml_parser import extrair_dados_nfse
-
-# URL de conexão atualizada
-DB_URL = "postgresql+psycopg2://lucasprado:HDGawOQc1792ECmNHGnaQKPi9hMJwD4S@dpg-d65gn7dum26s73birugg-a.virginia-postgres.render.com/db_controlefinanceiropradoconsulting"
-engine = create_engine(DB_URL)
-
-st.set_page_config(page_title="Lucas Prado - Gestão MEI", layout="wide")
-
-st.sidebar.title("🛠️ Controle Financeiro")
-menu = st.sidebar.selectbox("Ir para:", ["Dashboard", "Importar XML", "Histórico"])
-
-# --- IMPORTAR XML ---
-if menu == "Importar XML":
-    st.header("📥 Importar Notas Fiscais")
-    files = st.file_uploader("Arraste os XMLs", type="xml", accept_multiple_files=True)
-    
-    if files:
-        novos = []
-        with engine.connect() as conn:
-            existentes = [r[0] for r in conn.execute(text("SELECT chave_nfse FROM lancamentos"))]
-
-        for f in files:
-            dados = extrair_dados_nfse(f.read())
-            if dados['chave_nfse'] in existentes:
-                st.warning(f"Nota já importada: {dados['chave_nfse']}")
-            else:
-                novos.append(dados)
-
-        if novos:
-            df_novos = pd.DataFrame(novos)
-            st.dataframe(df_novos)
-            if st.button("Salvar no Render"):
-                df_novos.to_sql('lancamentos', engine, if_exists='append', index=False)
-                st.success("Salvo com sucesso!")
-
-# --- DASHBOARD ---
+# --- TELA: DASHBOARD ---
 elif menu == "Dashboard":
-    st.header("📊 Resumo de Faturamento")
-    df = pd.read_sql("SELECT * FROM lancamentos", engine)
-
+    st.header("📊 Análise de Faturamento")
+    
+    # Busca todos os dados para alimentar o filtro de ano
+    df = pd.read_sql("SELECT * FROM lancamentos WHERE tipo = 'Receita'", engine)
+    
     if not df.empty:
-        total = df['valor'].sum()
-        limite = 81000
+        # Criar coluna de Ano e Mês para facilitar filtros
+        df['data_registro'] = pd.to_datetime(df['data_registro'])
+        df['ano'] = df['data_registro'].dt.year
+        df['mes_ano'] = df['data_registro'].dt.strftime('%m/%Y')
+        df['mes_nome'] = df['data_registro'].dt.strftime('%b') # Jan, Fev...
+
+        # --- FILTRO DE ANO NA SIDEBAR ---
+        anos_disponiveis = sorted(df['ano'].unique(), reverse=True)
+        ano_selecionado = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis)
+
+        # Filtrar o DataFrame com base na escolha
+        df_filtrado = df[df['ano'] == ano_selecionado]
+
+        # --- KPIs DO ANO SELECIONADO ---
+        total_ano = df_filtrado['valor'].sum()
+        limite_mei = 81000
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("Total Acumulado", f"R$ {total:,.2f}")
-        c2.metric("Fôlego MEI", f"R$ {limite - total:,.2f}")
-        c3.progress(min(total/limite, 1.0), text=f"{(total/limite)*100:.1f}% do teto")
+        c1.metric(f"Faturamento em {ano_selecionado}", f"R$ {total_ano:,.2f}")
+        c2.metric("Saldo Restante (MEI)", f"R$ {max(0, limite_mei - total_ano):,.2f}")
+        c3.progress(min(total_ano/limite_mei, 1.0), text=f"{(total_ano/limite_mei)*100:.1f}% do limite anual")
 
-        # Gráfico por Cliente
-        df_cli = df.groupby('cliente')['valor'].sum().reset_index()
-        fig_cli = px.pie(df_cli, values='valor', names='cliente', title="Faturamento por Cliente", hole=.4)
-        st.plotly_chart(fig_cli, use_container_width=True)
+        st.divider()
+
+        # --- GRÁFICO 1: EVOLUÇÃO MÊS A MÊS ---
+        st.subheader(f"📈 Evolução Mensal - {ano_selecionado}")
+        
+        # Agrupar por mês e garantir a ordem cronológica
+        df_mensal = df_filtrado.groupby(df_filtrado['data_registro'].dt.month).agg({
+            'valor': 'sum',
+            'mes_ano': 'first'
+        }).reset_index()
+        
+        fig_evolucao = px.line(df_mensal, x='mes_ano', y='valor', 
+                               title="Faturamento Mensal",
+                               markers=True,
+                               text=df_mensal['valor'].apply(lambda x: f"R$ {x:,.2f}"))
+        
+        # Linha da média do MEI (R$ 6.750)
+        fig_evolucao.add_hline(y=6750, line_dash="dot", line_color="red", 
+                               annotation_text="Média Limite MEI (R$ 6.750)")
+        
+        st.plotly_chart(fig_evolucao, use_container_width=True)
+
+        # --- GRÁFICO 2: FATURAMENTO POR CLIENTE ---
+        st.subheader("🎯 Concentração por Cliente")
+        df_cli = df_filtrado.groupby('cliente')['valor'].sum().reset_index().sort_values('valor', ascending=False)
+        fig_pizza = px.pie(df_cli, values='valor', names='cliente', 
+                           hole=.4, title=f"Faturamento por Cliente em {ano_selecionado}")
+        st.plotly_chart(fig_pizza, use_container_width=True)
+
     else:
-        st.info("Nenhuma nota encontrada.")
-
-# --- HISTÓRICO ---
-elif menu == "Histórico":
-    st.header("📜 Todas as Notas")
-    df_h = pd.read_sql("SELECT data_registro, cliente, valor, descricao FROM lancamentos ORDER BY data_registro DESC", engine)
-    st.table(df_h)
+        st.info("Nenhum dado cadastrado ainda. Vá em 'Importar XML' para começar.")

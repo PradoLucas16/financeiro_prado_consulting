@@ -73,13 +73,33 @@ elif menu == "Dashboard":
 
         st.divider()
 
-        # Gráfico Mensal
+# --- GRÁFICO 1: EVOLUÇÃO MÊS A MÊS ---
         st.subheader(f"📈 Evolução Mensal - {ano_selecionado}")
-        df_mensal = df_filtrado.groupby(df_filtrado['data_registro'].dt.month).agg({'valor': 'sum', 'mes_ano': 'first'}).reset_index()
-        fig_evolucao = px.line(df_mensal, x='mes_ano', y='valor', markers=True, text_auto='.2s')
-        fig_evolucao.add_hline(y=6750, line_dash="dot", line_color="red", annotation_text="Média MEI")
+        
+        # Agrupar por mês e garantir a ordem numérica (1, 2, 3...)
+        df_mensal = df_filtrado.groupby(df_filtrado['data_registro'].dt.month).agg({
+            'valor': 'sum',
+            'mes_ano': 'first'
+        }).reset_index().sort_values('data_registro')
+        
+        # Criar o gráfico sem o 'text_auto' que causou o erro
+        fig_evolucao = px.line(
+            df_mensal, 
+            x='mes_ano', 
+            y='valor', 
+            markers=True,
+            title=f"Faturamento Mensal em {ano_selecionado}",
+            labels={'valor': 'Valor (R$)', 'mes_ano': 'Mês/Ano'}
+        )
+        
+        # Adicionar os rótulos de texto de forma manual e segura
+        fig_evolucao.update_traces(textposition="top center", texttemplate='R$ %{y:,.2f}')
+        
+        # Linha da média do MEI (R$ 6.750)
+        fig_evolucao.add_hline(y=6750, line_dash="dot", line_color="red", 
+                               annotation_text="Média Limite MEI (R$ 6.750)")
+        
         st.plotly_chart(fig_evolucao, use_container_width=True)
-
         # Gráfico Cliente
         st.subheader("🎯 Faturamento por Cliente")
         df_cli = df_filtrado.groupby('cliente')['valor'].sum().reset_index()

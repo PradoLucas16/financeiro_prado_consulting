@@ -56,7 +56,21 @@ elif menu == "Dashboard":
         df['data_registro'] = pd.to_datetime(df['data_registro'])
         df['ano'] = df['data_registro'].dt.year
         df['mes_ano'] = df['data_registro'].dt.strftime('%m/%Y')
-
+        
+    # Dentro do elif menu == "Dashboard":
+    if not df.empty:
+        # ... (códigos de data anteriores) ...
+    
+    # FILTRO DE CNPJ EMISSOR
+    cnpjs = df['cnpj_emissor'].unique()
+    cnpj_selecionado = st.sidebar.multiselect("Filtrar por meu CNPJ", cnpjs, default=cnpjs)
+    
+    # FILTRO DE ANO
+    anos = sorted(df['ano'].unique(), reverse=True)
+    ano_sel = st.sidebar.selectbox("Ano", anos)
+    
+    # Aplicando os filtros
+    df_filtrado = df[(df['ano'] == ano_sel) & (df['cnpj_emissor'].isin(cnpj_selecionado))]
         # Filtro de Ano na Sidebar
         anos_disponiveis = sorted(df['ano'].unique(), reverse=True)
         ano_selecionado = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis)

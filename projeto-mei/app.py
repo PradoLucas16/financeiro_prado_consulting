@@ -4,126 +4,97 @@ import plotly.express as px
 from sqlalchemy import create_engine, text
 from utils.xml_parser import extrair_dados_nfse
 
-# 1. CONEXÃO COM O BANCO (RENDER)
+# 1. CONEXÃO (RENDER)
 DB_URL = "postgresql+psycopg2://lucasprado:HDGawOQc1792ECmNHGnaQKPi9hMJwD4S@dpg-d65gn7dum26s73birugg-a.virginia-postgres.render.com/db_controlefinanceiropradoconsulting"
 engine = create_engine(DB_URL)
 
-st.set_page_config(page_title="Lucas Prado - Gestão MEI", layout="wide")
+st.set_page_config(page_title="Lucas Prado - Multi-CNPJ", layout="wide")
 
 # 2. MENU LATERAL
-st.sidebar.title("🛠️ Controle Financeiro")
-menu = st.sidebar.selectbox("Ir para:", ["Dashboard", "Importar XML", "Histórico"])
+st.sidebar.title("🛠️ Gestão de Empresas")
+menu = st.sidebar.selectbox("Navegação", ["Dashboard", "Importar XML", "Histórico"])
 
 # --- TELA: IMPORTAR XML ---
 if menu == "Importar XML":
     st.header("📥 Importar Notas Fiscais")
-    files = st.file_uploader("Arraste os XMLs", type="xml", accept_multiple_files=True)
+    files = st.file_uploader("Selecione os XMLs", type="xml", accept_multiple_files=True)
     
     if files:
         novos = []
         with engine.connect() as conn:
-            # Busca notas que já estão no banco para não duplicar
             res = conn.execute(text("SELECT chave_nfse FROM lancamentos"))
             existentes = [r[0] for r in res]
 
         for f in files:
             dados = extrair_dados_nfse(f.read())
             if dados['chave_nfse'] in existentes:
-                st.warning(f"Nota já importada: {dados['chave_nfse']}")
+                st.warning(f"Nota já existe: {dados['chave_nfse']}")
             else:
                 novos.append(dados)
 
         if novos:
             df_novos = pd.DataFrame(novos)
-            st.write("### Notas Detectadas:")
-            st.dataframe(df_novos[['data_registro', 'cliente', 'valor']])
-            if st.button("Confirmar e Salvar no Banco"):
+            st.dataframe(df_novos[['cnpj_emissor', 'cliente', 'valor']])
+            if st.button("Salvar no Banco de Dados"):
                 df_novos.to_sql('lancamentos', engine, if_exists='append', index=False)
-                st.success("Salvo com sucesso!")
-                st.balloons()
+                st.success("Dados salvos!")
 
-# --- TELA: DASHBOARD (COM FILTRO DE ANO) ---
+# --- TELA: DASHBOARD ---
 elif menu == "Dashboard":
-    st.header("📊 Análise de Faturamento")
+    st.header("📊 Análise por CNPJ")
     
     try:
-        df = pd.read_sql("SELECT * FROM lancamentos WHERE tipo = 'Receita'", engine)
+        df = pd.read_sql("SELECT * FROM lancamentos", engine)
     except Exception:
         df = pd.DataFrame()
 
     if not df.empty:
-        # Tratamento de Datas
+        # Preparação de Dados
         df['data_registro'] = pd.to_datetime(df['data_registro'])
         df['ano'] = df['data_registro'].dt.year
         df['mes_ano'] = df['data_registro'].dt.strftime('%m/%Y')
-        
-    # Dentro do elif menu == "Dashboard":
-    if not df.empty:
-        # ... (códigos de data anteriores) ...
-    
-    # FILTRO DE CNPJ EMISSOR
-    cnpjs = df['cnpj_emissor'].unique()
-    cnpj_selecionado = st.sidebar.multiselect("Filtrar por meu CNPJ", cnpjs, default=cnpjs)
-    
-    # FILTRO DE ANO
-    anos = sorted(df['ano'].unique(), reverse=True)
-    ano_sel = st.sidebar.selectbox("Ano", anos)
-    
-    # Aplicando os filtros
-    df_filtrado = df[(df['ano'] == ano_sel) & (df['cnpj_emissor'].isin(cnpj_selecionado))]
-        # Filtro de Ano na Sidebar
-        anos_disponiveis = sorted(df['ano'].unique(), reverse=True)
-        ano_selecionado = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis)
-        df_filtrado = df[df['ano'] == ano_selecionado]
 
-        # KPIs
-        total_ano = df_filtrado['valor'].sum()
+        # --- FILTROS NA SIDEBAR ---
+        st.sidebar.subheader("Filtros")
+        
+        # Filtro de CNPJ (Importante para não misturar os limites)
+        meus_cnpjs = sorted(df['cnpj_emissor'].unique())
+        cnpj_sel = st.sidebar.selectbox("Selecione sua Empresa", meus_cnpjs)
+        
+        # Filtro de Ano
+        anos = sorted(df['ano'].unique(), reverse=True)
+        ano_sel = st.sidebar.selectbox("Ano de Referência", anos)
+
+        # Aplicar Filtros
+        df_filtrado = df[(df['cnpj_emissor'] == cnpj_sel) & (df['ano'] == ano_sel)]
+
+        # --- KPIs ---
+        total_empresa = df_filtrado['valor'].sum()
         limite_mei = 81000
         
+        st.subheader(f"Resumo: {cnpj_sel}")
         c1, c2, c3 = st.columns(3)
-        c1.metric(f"Total em {ano_selecionado}", f"R$ {total_ano:,.2f}")
-        c2.metric("Saldo p/ Limite", f"R$ {max(0, limite_mei - total_ano):,.2f}")
-        c3.progress(min(total_ano/limite_mei, 1.0), text=f"{(total_ano/limite_mei)*100:.1f}% do teto")
+        c1.metric(f"Total {ano_sel}", f"R$ {total_empresa:,.2f}")
+        c2.metric("Saldo Limite MEI", f"R$ {max(0, limite_mei - total_empresa):,.2f}")
+        
+        perc = min(total_empresa/limite_mei, 1.0)
+        c3.progress(perc, text=f"{perc*100:.1f}% do teto anual")
 
+        # --- GRÁFICO MENSAL ---
         st.divider()
-
-# --- GRÁFICO 1: EVOLUÇÃO MÊS A MÊS ---
-        st.subheader(f"📈 Evolução Mensal - {ano_selecionado}")
-        
-        # Agrupar por mês e garantir a ordem numérica (1, 2, 3...)
         df_mensal = df_filtrado.groupby(df_filtrado['data_registro'].dt.month).agg({
-            'valor': 'sum',
-            'mes_ano': 'first'
+            'valor': 'sum', 'mes_ano': 'first'
         }).reset_index().sort_values('data_registro')
-        
-        # Criar o gráfico sem o 'text_auto' que causou o erro
-        fig_evolucao = px.line(
-            df_mensal, 
-            x='mes_ano', 
-            y='valor', 
-            markers=True,
-            title=f"Faturamento Mensal em {ano_selecionado}",
-            labels={'valor': 'Valor (R$)', 'mes_ano': 'Mês/Ano'}
-        )
-        
-        # Adicionar os rótulos de texto de forma manual e segura
-        fig_evolucao.update_traces(textposition="top center", texttemplate='R$ %{y:,.2f}')
-        
-        # Linha da média do MEI (R$ 6.750)
-        fig_evolucao.add_hline(y=6750, line_dash="dot", line_color="red", 
-                               annotation_text="Média Limite MEI (R$ 6.750)")
-        
-        st.plotly_chart(fig_evolucao, use_container_width=True)
-        # Gráfico Cliente
-        st.subheader("🎯 Faturamento por Cliente")
-        df_cli = df_filtrado.groupby('cliente')['valor'].sum().reset_index()
-        fig_pizza = px.pie(df_cli, values='valor', names='cliente', hole=.4)
-        st.plotly_chart(fig_pizza, use_container_width=True)
+
+        fig = px.line(df_mensal, x='mes_ano', y='valor', markers=True, title="Evolução Mensal de Faturamento")
+        fig.add_hline(y=6750, line_dash="dot", line_color="red", annotation_text="Média MEI")
+        st.plotly_chart(fig, use_container_width=True)
+
     else:
-        st.info("Ainda não há dados. Importe seus XMLs primeiro.")
+        st.info("Importe notas para visualizar o dashboard.")
 
 # --- TELA: HISTÓRICO ---
 elif menu == "Histórico":
-    st.header("📜 Histórico Detalhado")
-    df_h = pd.read_sql("SELECT data_registro, cliente, valor, descricao FROM lancamentos ORDER BY data_registro DESC", engine)
+    st.header("📜 Histórico Geral")
+    df_h = pd.read_sql("SELECT cnpj_emissor, data_registro, cliente, valor FROM lancamentos ORDER BY data_registro DESC", engine)
     st.dataframe(df_h, use_container_width=True)
